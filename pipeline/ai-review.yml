@@ -65,7 +65,7 @@ permissions:
   contents: read
 
 # One run per PR *per event*; a new push cancels the previous `pull_request`
-# run — no duplicate AI comments, no runaway cost from rapid pushes. The event
+# run — no two concurrent AI comments (one per completed run), no runaway cost from rapid pushes. The event
 # name is part of the group so that a review submitted mid-run does not cancel
 # the tests of the push that is still being checked. Review runs are QUEUED, not
 # cancelled (anyone can post a COMMENTED review on a public repo; with cancelling,
@@ -95,6 +95,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false   # PR test code must not find GITHUB_TOKEN in .git/config
 
       - uses: actions/setup-node@v4
         with:
@@ -112,9 +114,11 @@ jobs:
           BASELINE_TESTS: "13"   # bump this when tests are legitimately added
         run: |
           # Node's runner prints "ℹ tests N" (spec reporter) or "# tests N" (tap).
-          count="$(grep -E '^[^A-Za-z]*tests [0-9]+[[:space:]]*$' "$RUNNER_TEMP/test-output.txt" | grep -Eo '[0-9]+' | head -n 1 || true)"
+          # The LAST such line is the runner's summary; earlier ones may be printed by the PR's own tests.
+          count="$(grep -E '^[^A-Za-z]*tests [0-9]+[[:space:]]*$' "$RUNNER_TEMP/test-output.txt" | tail -n 1 | grep -Eo '[0-9]+' || true)"
           if [ -z "$count" ]; then
-            echo "::warning title=rule 12::Could not parse the test count from the runner output"
+            echo "::error title=rule 12::Could not parse the test count from the runner output"
+            exit 1
           elif [ "$count" -lt "$BASELINE_TESTS" ]; then
             echo "::error title=rule 8/12::Only $count tests ran, baseline is $BASELINE_TESTS — tests were deleted, skipped or scripts.test was narrowed. A human must justify this in the PR."
             exit 1
@@ -275,7 +279,7 @@ jobs:
           q="'"
           # Token formats (case-sensitive) ...
           keys="$(grep -E 'ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}|(^|[^A-Za-z0-9_])sk-(ant-)?[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY' "$W/added.txt" || true)"
-          # ... and `password/secret/token/api_key = "<literal>"` (case-insensitive).
+          # ... and `password/secret/token/api_key = "<lit>"` (case-insensitive; keep examples < 8 chars or this line matches itself).
           # Values starting with `$` (`${{ secrets.X }}`, `$ENV`) are references, not secrets.
           assign="$(grep -Ei "(password|passwd|secret|token|api[_-]?key)[[:space:]]*[:=][[:space:]]*[\"$q][^\"$q\$]{8,}[\"$q]" "$W/added.txt" || true)"
           hits="$(printf '%s\n%s\n' "$keys" "$assign" | grep -v '^$' || true)"
