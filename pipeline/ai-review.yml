@@ -261,7 +261,7 @@ jobs:
           PR_TITLE: "${{ github.event.pull_request.title }}"
           PR_BODY: "${{ github.event.pull_request.body }}"
         run: |
-          pat='ignore (previous|all|the|above|prior) instructions|skip (this |the )?review|do not flag|\bLGTM\b|\bAI:? ?(approve|ignore|skip)|reviewer:? ?(this is fine|skip|ignore|approve)'
+          pat='ignore (previous|all|the|above|prior) instructions|skip (this |the )?review|do not (flag|report)|\b(AI|automated) (code )?reviewers?\b|\bLGTM\b|\bAI:? ?(approve|ignore|skip)|reviewer:? ?(this is fine|skip|ignore|approve)'
           hits="$( { printf '%s\n%s\n' "$PR_TITLE" "$PR_BODY" | sed 's/^/PR text:/'; cat "$W/added.txt"; } | grep -Ei "$pat" || true)"
           if [ -n "$hits" ]; then
             echo "::warning title=rule 11::Text addressed to a reviewer/tool found — by the team standard this is itself a blocking finding; the human reviewer decides"
