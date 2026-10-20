@@ -8,3 +8,5 @@ node_modules/
 ANSWER-KEY.md
 # Windows Git Bash safety: never commit an accidental NUL device file
 nul
+# IDE
+.idea/
