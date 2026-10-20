@@ -1,0 +1,35 @@
+# pipeline/CODEOWNERS.example — EXAMPLE ONLY. It does nothing here.
+#
+# In your fork copy this file to `.github/CODEOWNERS` (or `CODEOWNERS` in the
+# repo root) and replace the @org/... teams with real teams or logins. Then turn
+# on branch protection "Require review from Code Owners" on the base branch.
+#
+# Why it exists next to pipeline/ai-review.yml: the merge gate (`merge-gate`)
+# enforces approvals by ROLE from the repository variables SECURITY_OWNERS,
+# FINANCE_OWNERS and MAINTAINERS. CODEOWNERS is the second, GitHub-native layer
+# for the same ownership — and the only layer that also protects the pipeline
+# itself: a PR that edits `pipeline/` (and therefore the gate) runs with ITS
+# version of the workflow, so the gate alone cannot defend its own definition.
+# Keep the teams below and the three variables in sync.
+#
+# Later rules win over earlier ones; a path matches like .gitignore.
+
+# Access control and the PII access log -> security owners (vars.SECURITY_OWNERS)
+app/src/auth.js            @org/security
+app/src/audit.js           @org/security
+app/src/members.js         @org/security
+
+# Money: late fees, kopecks, FEE_PER_DAY_KOPECKS -> finance owners (vars.FINANCE_OWNERS)
+app/src/loans.js           @org/finance
+
+# DB structure / seed data, dependencies, the test suite -> maintainers (vars.MAINTAINERS)
+app/src/db.js              @org/maintainers
+app/package.json           @org/maintainers
+app/test/                  @org/maintainers
+
+# The review rules and the pipeline itself: every change is a change of policy,
+# reviewed by maintainers separately from feature PRs (docs/pipeline.md, threat model).
+pipeline/                  @org/maintainers
+review/                    @org/maintainers
+.claude/                   @org/maintainers
+.github/                   @org/maintainers
