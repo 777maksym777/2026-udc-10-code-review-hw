@@ -33,3 +33,8 @@ pipeline/                  @org/maintainers
 review/                    @org/maintainers
 .claude/                   @org/maintainers
 .github/                   @org/maintainers
+# The ownership file itself, agent instructions and npm config (the classifier treats them as policy too).
+CODEOWNERS                 @org/maintainers
+/AGENTS.md                 @org/maintainers
+/CLAUDE.md                 @org/maintainers
+.npmrc                     @org/maintainers

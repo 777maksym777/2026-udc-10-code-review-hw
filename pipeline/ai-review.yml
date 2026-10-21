@@ -151,15 +151,20 @@ jobs:
           W="$RUNNER_TEMP/checks"
           mkdir -p "$W"
           git fetch --no-tags origin "+refs/heads/$BASE_REF:refs/remotes/origin/$BASE_REF"
-          git diff --name-only "origin/$BASE_REF...HEAD" > "$W/changed-files.txt"
-          git diff "origin/$BASE_REF...HEAD" > "$W/pr.diff"
+          # Same hardened diff as RISK-CLASSIFY: a PR's .gitattributes, renames or odd names cannot hide lines.
+          gd() { git -c core.quotePath=false diff --no-renames -a --no-textconv --no-ext-diff "$@" "origin/$BASE_REF...HEAD"; }
+          gd --name-only -z | tr '\0' '\n' > "$W/changed-files.txt"
+          gd > "$W/pr.diff"
           # Turn the unified diff into "path:line:text" rows — added lines (line
           # number in the new file) and removed lines (line number in the old one).
+          # `---`/`+++` are file headers ONLY between `diff --git` and the first `@@`.
           awk -v added="$W/added.txt" -v removed="$W/removed.txt" '
-            /^--- /    { ofile = substr($0, 7); next }
-            /^\+\+\+ / { nfile = substr($0, 7); next }
-            /^@@ /     { split($2, o, /[,-]/); split($3, n, /[,+]/); oldn = o[2]; newn = n[2]; next }
-            /^\+/      { print nfile ":" newn ":" substr($0, 2) > added;   newn++; next }
+            /^diff --git /    { hdr = 1; next }
+            hdr && /^--- /    { ofile = substr($0, 5); sub(/^"?a\//, "", ofile); next }
+            hdr && /^\+\+\+ / { nfile = substr($0, 5); sub(/^"?b\//, "", nfile); next }
+            /^@@ /     { hdr = 0; split($2, o, /[,-]/); split($3, n, /[,+]/); oldn = o[2]; newn = n[2]; next }
+            hdr        { next }
+            /^\+/{ print nfile ":" newn ":" substr($0, 2) > added;   newn++; next }
             /^-/       { print ofile ":" oldn ":" substr($0, 2) > removed; oldn++; next }
             /^ /       { oldn++; newn++ }
           ' "$W/pr.diff"
@@ -180,8 +185,9 @@ jobs:
             fail=1
           fi
           # The PR's package.json must still declare no dependencies of any kind.
+          # Read + JSON.parse, never require(): a PR could make app/package.json a directory with index.js.
           if ! node -e '
-            const p = require("./app/package.json");
+            const p = JSON.parse(require("node:fs").readFileSync("app/package.json", "utf8"));
             const bad = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"]
               .filter((k) => p[k] && Object.keys(p[k]).length > 0);
             if (bad.length) {
@@ -189,6 +195,17 @@ jobs:
               process.exit(1);
             }
           '; then fail=1; fi
+          # Added import/require in app/ JS whose specifier is neither relative (`./`, `../`) nor `node:` = a package.
+          imports="$(grep -E '^app/[^:]+\.[cm]?js:[0-9]+:' "$W/added.txt" | sed -E 's#//.*$##' | awk -v q="'" '
+            BEGIN { re = "(from|import|require\\()[ \t]*\\(?[ \t]*[\"" q "][^\"" q "]+[\"" q "]" }
+            { s = $0; while (match(s, re)) { m = substr(s, RSTART, RLENGTH); s = substr(s, RSTART + RLENGTH)
+                spec = m; sub("^[^\"" q "]*[\"" q "]", "", spec); sub(".$", "", spec)
+                if (spec !~ /^(\.|node:)/) { print; next } } }' || true)"
+          if [ -n "$imports" ]; then
+            echo "::error title=rule 13::import/require of a module that is neither node:* nor a relative ./ path — app/ has no npm dependencies"
+            printf '%s\n' "$imports" | sed 's/^/  /'
+            fail=1
+          fi
           [ "$fail" -eq 0 ] && echo "hygiene: OK"
           exit "$fail"
 
@@ -280,7 +297,7 @@ jobs:
           # Token formats (case-sensitive) ...
           keys="$(grep -E 'ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}|(^|[^A-Za-z0-9_])sk-(ant-)?[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY' "$W/added.txt" || true)"
           # ... and `password/secret/token/api_key = "<lit>"` (case-insensitive; keep examples < 8 chars or this line matches itself).
-          # Values starting with `$` (`${{ secrets.X }}`, `$ENV`) are references, not secrets.
+          # Values starting with `$` (a `secrets.X` expression, `$ENV`) are references, not secrets.
           assign="$(grep -Ei "(password|passwd|secret|token|api[_-]?key)[[:space:]]*[:=][[:space:]]*[\"$q][^\"$q\$]{8,}[\"$q]" "$W/added.txt" || true)"
           hits="$(printf '%s\n%s\n' "$keys" "$assign" | grep -v '^$' || true)"
           if [ -n "$hits" ]; then
@@ -493,7 +510,8 @@ jobs:
           W="$RUNNER_TEMP/ai-review"
           mkdir -p "$W"
           git fetch --no-tags origin "+refs/heads/$BASE_REF:refs/remotes/origin/$BASE_REF"
-          git diff "origin/$BASE_REF...HEAD" -- app > "$W/pr.diff"
+          # Hardened like the classifier: a PR's .gitattributes must not hide code from the reviewer.
+          git -c core.quotePath=false diff --no-renames -a --no-textconv --no-ext-diff "origin/$BASE_REF...HEAD" -- app > "$W/pr.diff"
 
           # System prompt = the team's reviewer prompt (identical to .claude/commands/review.md)
           # plus a short preamble for the no-tools CI mode. `$ARGUMENTS` -> PR number.
@@ -621,8 +639,8 @@ jobs:
   #             high trigger named: security (auth/audit/PII/fs/path),
   #             finance (Kopecks/lateFee/FEE_PER_DAY), maintainers (db.js,
   #             package.json, weakened tests, reviewer-addressed text).
-  #   A CHANGES_REQUESTED that is still the reviewer's latest state blocks at
-  #   any level. Only the latest state-changing review per reviewer counts;
+  #   A CHANGES_REQUESTED that is still a trusted reviewer's latest state blocks
+  #   at any level. Only the latest state-changing review per reviewer counts;
   #   the PR author and bots never count; an APPROVED counts only if its
   #   commit_id is the current head SHA and the reviewer has write access or is
   #   named in a role variable. A run whose head is no longer the PR's head fails.
@@ -782,27 +800,29 @@ jobs:
           # older push says nothing about the new code — and (2) the reviewer is trusted: named in a
           # role variable, or has write/maintain/admin on the repo (on a public repo ANY account can
           # submit "APPROVED"). A failing permission lookup aborts the step (fail closed).
+          # A CHANGES_REQUESTED blocks (on any commit) only from a trusted reviewer too — like GitHub,
+          # which ignores "Request changes" from accounts without write access.
           all_owners="$SECURITY_OWNERS,$FINANCE_OWNERS,$MAINTAINERS"
-          approvers=""; stale=""; untrusted=""
+          approvers=""; blockers=""; stale=""; untrusted=""
           # Loop reads fd 3 and `gh` gets </dev/null, so nothing in the body can drain the list.
           while IFS=$'\t' read -r -u 3 state login commit; do
-            [ "$state" = "APPROVED" ] || continue
-            if [ "$commit" != "$HEAD_SHA" ]; then stale="$stale $login"; continue; fi
+            case "$state" in APPROVED|CHANGES_REQUESTED) ;; *) continue ;; esac
+            if [ "$state" = "APPROVED" ] && [ "$commit" != "$HEAD_SHA" ]; then stale="$stale $login"; continue; fi
             if ! in_list "$all_owners" "$login"; then
               perm="$(gh api "repos/$GH_REPO/collaborators/$login/permission" --jq .permission </dev/null)"
               case "$perm" in admin|maintain|write) ;; *) untrusted="$untrusted $login"; continue ;; esac
             fi
-            approvers="$approvers$login"$'\n'
+            if [ "$state" = "APPROVED" ]; then approvers="$approvers$login"$'\n'; else blockers="$blockers$login"$'\n'; fi
           done 3< "$W/latest.tsv"
           approvers="$(printf '%s' "$approvers" | sed '/^$/d' | sort -u)"
-          blockers="$(awk -F'\t'  '$1 == "CHANGES_REQUESTED" { print $2 }' "$W/latest.tsv" | sort -u)"
+          blockers="$(printf '%s' "$blockers" | sed '/^$/d' | sort -u)"
           n_approvals="$(printf '%s\n' "$approvers" | grep -c . || true)"
           echo "level=$LEVEL roles=${ROLES:-none} author=$PR_AUTHOR head=$HEAD_SHA"
           echo "approvals (latest state, on head, trusted, non-author, non-bot): $n_approvals"
           printf '%s\n' "$approvers" | sed '/^$/d; s/^/  approved:           /'
           printf '%s\n' "$blockers"  | sed '/^$/d; s/^/  changes requested:  /'
           [ -z "$stale" ]     || echo "  ignored — approval on an older commit (re-approve the current head):$stale"
-          [ -z "$untrusted" ] || echo "  ignored — reviewer without write access and not in a role variable:$untrusted"
+          [ -z "$untrusted" ] || echo "  ignored — approve/request-changes from a reviewer without write access and not in a role variable:$untrusted"
 
           fail=0
           case "$LEVEL" in
